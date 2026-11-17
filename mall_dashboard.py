@@ -512,10 +512,11 @@ with tab_score:
     # further per-category max-normalization step is needed before
     # weighting — unlike summing the raw fields first (the previous
     # approach), where a category could be dominated by whichever field
-    # happened to have the largest raw scale.
+    # happened to have the largest raw scale. The max comes from `summary`
+    # (every mall), not `filtered`, so search/HPM filters don't move scores.
     for key, _label, cols in CATEGORY_DEFS:
         normalized_fields = pd.DataFrame({
-            col: scored[col] / max(scored[col].max(), 1) for col in cols
+            col: scored[col] / max(summary[col].max(), 1) for col in cols
         })
         scored[f"cat_{key}_ratio"] = normalized_fields.mean(axis=1)
 
@@ -534,18 +535,22 @@ with tab_score:
         """Whatever slider the user just moved keeps its new value; the
         remainder (100 - changed) is redistributed across the other
         sliders in proportion to their current relative weights (or split
-        evenly if those are all currently zero). The last of the "other"
-        sliders absorbs the rounding remainder so the total is always
-        exactly 100."""
+        evenly if those are all currently zero). Largest-remainder rounding
+        hands out the leftover points, so every slider stays >= 0 and the
+        total is always exactly 100."""
         rem = 100 - st.session_state[changed_key]
         other_keys = [k for k in weight_keys if k != changed_key]
         other_sum = sum(st.session_state[k] for k in other_keys)
-        allocated = 0
-        for k in other_keys[:-1]:
-            share = int(round(rem * (st.session_state[k] / other_sum))) if other_sum > 0 else rem // len(other_keys)
+        if other_sum > 0:
+            raw = {k: rem * st.session_state[k] / other_sum for k in other_keys}
+        else:
+            raw = {k: rem / len(other_keys) for k in other_keys}
+        shares = {k: int(raw[k]) for k in other_keys}
+        leftover = rem - sum(shares.values())
+        for k in sorted(other_keys, key=lambda k: raw[k] - shares[k], reverse=True)[:leftover]:
+            shares[k] += 1
+        for k, share in shares.items():
             st.session_state[k] = share
-            allocated += share
-        st.session_state[other_keys[-1]] = rem - allocated
 
     def _make_on_change(key):
         return lambda: _rebalance_weights(key)

@@ -27,8 +27,8 @@ openv5.py  ->  full_df.csv  ->  mall_transformation_pipeline.py  ->  mall_locati
 
 ## Required input files
 
-All expected under `DATA_DIR` (currently hardcoded at the top of
-`mall_transformation_pipeline.py` — update this path for your machine):
+All expected under `_data/` next to the script (`DATA_DIR` at the top of
+`mall_transformation_pipeline.py`); the output is written next to the script too:
 
 | File | Source | Used for |
 |---|---|---|
