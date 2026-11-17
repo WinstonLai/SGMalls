@@ -1,0 +1,6 @@
+-r requirements.txt
+beautifulsoup4==4.15.0
+geopandas==1.1.4
+# openv5.py (the OneMap geocoder, not in this repo) is the likely user of these:
+python-dotenv==1.2.3
+Requests==2.34.2

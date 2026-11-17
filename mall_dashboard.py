@@ -36,6 +36,10 @@ from mall_common import (
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Mall Amenities Dashboard v3", layout="wide")
 
+# Map fill colours (RGBA): the dataviz palette's blue and orange.
+MAP_SATISFY_COLOR = [42, 120, 214, 210]
+MAP_FAIL_COLOR = [235, 104, 52, 200]
+
 # Every column the tabs, map and scoring read. supermarket_outlet_count is
 # optional (the criteria and Cat A adapt when it's absent).
 REQUIRED_COLUMNS = [
@@ -180,14 +184,12 @@ bike_distance_m = st.sidebar.slider(
     help="How close a bike rack must be to a mall to count as 'has a bike rack'. "
     "Recomputes has_bike_rack and the satisfy criteria live for this session only."
 )
-bike_ok = True
 try:
     bike_x, bike_y = load_bike_rack_points(BIKE_RACK_GEOJSON_PATH)
     summary["has_bike_rack"] = compute_has_bike_rack(
         summary["longitude"], summary["latitude"], bike_x, bike_y, bike_distance_m
     )
 except FileNotFoundError:
-    bike_ok = False
     st.sidebar.warning(
         "Couldn't find LTABicycleRackGEOJSON.geojson in _data — showing "
         "has_bike_rack as-is from the loaded data instead."
@@ -205,7 +207,6 @@ except FileNotFoundError:
 # is corrected) — full_df.csv already reflects the corrected postal (529536),
 # so no special-casing is needed at this layer anymore.
 # ---------------------------------------------------------------------------
-hdp_ok = True
 try:
     mall_postal_pairs = load_mall_postals(FULL_DF_PATH)
     hdp_postals = load_hdp_postals(HDP_CURRENT_PATH, "postal")
@@ -222,7 +223,6 @@ try:
             "so they keep the HDP Outlet value from the CSV instead of a live count."
         )
 except FileNotFoundError:
-    hdp_ok = False
     st.sidebar.warning(
         "Couldn't find full_df.csv or the HDP postal source file in "
         "_data — showing HDP Outlet as-is from the loaded data instead."
@@ -279,7 +279,7 @@ else:
         "HDP outlets count here.)"
     )
 
-# Recomputed regardless of whether the bike geojson loaded above (bike_ok) —
+# Recomputed regardless of whether the bike geojson loaded above —
 # if it failed, has_bike_rack just falls back to whatever was already in the
 # loaded CSV, and satisfy still reflects the criteria chosen below.
 summary["satisfy"] = recompute_satisfy(
@@ -595,14 +595,23 @@ map_df = filtered.dropna(subset=["latitude", "longitude"]).copy()
 if map_df.empty:
     st.info("No malls with coordinates in the current filter.")
 else:
-    col1, col2 = st.columns(2)
-    size = col1.slider("Size slider", 0, 1000, 330, key="map_size")
+    size_col, _ = st.columns(2)
+    size = size_col.slider("Size slider", 0, 1000, 330, key="map_size")
     map_df["radius"] = size
+    # Blue vs orange (colour-blind safe, same palette as the HPM Index chart);
+    # the tooltip repeats the status in words so colour isn't the only cue.
     map_df["color"] = map_df["satisfy"].apply(
-        lambda satisfy: [0, 255, 0, 200] if satisfy else [255, 0, 0, 160]
+        lambda satisfy: MAP_SATISFY_COLOR if satisfy else MAP_FAIL_COLOR
     )
-    map_df["line_color"] = map_df["HPM"].apply(lambda hpm: [255, 215, 0, 255] if hpm == 1 else [0, 0, 0, 0])
+    map_df["line_color"] = map_df["HPM"].apply(lambda hpm: [20, 20, 20, 255] if hpm == 1 else [0, 0, 0, 0])
     map_df["line_width"] = map_df["HPM"].apply(lambda hpm: 40 if hpm == 1 else 0)
+    # Tooltip fields get plain names (no spaces) so the {field} templates resolve.
+    map_df["tip_satisfy"] = map_df["satisfy"].map({1: "Yes", 0: "No"})
+    map_df["tip_hpm"] = map_df["HPM"].map({1: "Yes", 0: "No"})
+    map_df["tip_bike"] = map_df["has_bike_rack"].map({1: "Yes", 0: "No"})
+    map_df["tip_playground"] = map_df["has_playground"].map({1: "Yes", 0: "No"})
+    map_df["tip_hdp"] = map_df["HDP Outlet"]
+    map_df["tip_hpb"] = map_df["hpb_event_count"]
 
     layer = pdk.Layer(
         "ScatterplotLayer",
@@ -620,12 +629,16 @@ else:
         longitude=map_df["longitude"].mean(),
         zoom=10.5,
     )
-    tooltip = {"text": "{mall_name}\nTotal amenities: {Total}\nHPM: {HPM}"}
+    tooltip = {
+        "text": "{mall_name}\nSatisfies criteria: {tip_satisfy}\nCurrent HPM: {tip_hpm}\n"
+        "Bike rack nearby: {tip_bike}\nPlayground: {tip_playground}\n"
+        "HDP outlets: {tip_hdp}\nHPB events: {tip_hpb}\nTotal amenities: {Total}"
+    }
     st.pydeck_chart(
         pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip),
         width="stretch"
     )
     st.caption(
-        ":green[Green] = satisfies current HPM criteria, :red[Red] = does not satisfy current HPM criteria. "
-        ":color[Gold]{foreground='rgb(255, 215, 0)'} ring = current HPM mall."
+        ":blue[Blue] = satisfies current HPM criteria, :orange[Orange] = does not satisfy current HPM criteria. "
+        "A dark ring = current HPM mall. Hover a mall for its status and counts."
     )
