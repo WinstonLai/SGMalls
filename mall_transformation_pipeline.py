@@ -32,15 +32,29 @@ the intermediate amenity-summary CSV for debugging, uncomment the marked
 line near the bottom of build_amenity_summary().
 """
 
+from pathlib import Path
+
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 from bs4 import BeautifulSoup
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-DATA_DIR = "/Users/weijianchee/Downloads/Projects/intern/HPM_index/_data"
+REPO_DIR = Path(__file__).resolve().parent
+DATA_DIR = REPO_DIR / "_data"
+OUTPUT_PATH = REPO_DIR / "mall_locations_summary.csv"
 X_METERS = 200  # bike rack proximity threshold, in metres
+
+# Known-bad geocodes in full_df.csv, corrected here until fixed upstream in
+# openv5.py: {mall_name: (latitude, longitude)}. Only add a mall once its
+# correct coordinates are confirmed. Sun Plaza's postal (757713) is in
+# Sembawang, matching the datamart's 1.4482N, not full_df's 1.359N/103.946E.
+COORD_OVERRIDES = {
+    "Sun Plaza": (1.4482, 103.8195),
+}
+COORD_MISMATCH_KM = 1  # warn when full_df and datamart coords differ by more
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +102,26 @@ def clean(df):
     return clean_gdf
 
 
+def check_coords_against_datamart(malls_df):
+    """Warns about malls whose full_df.csv coordinates disagree with the
+    datamart's LAT/LNG by more than COORD_MISMATCH_KM — one of the two is a
+    bad geocode, and the bike rack flag and map both depend on them."""
+    datamart = pd.read_csv(f"{DATA_DIR}/datamart_summary.csv")
+    datamart['MALL_NAME'] = datamart['MALL_NAME'].str.strip()
+    coords = malls_df[['mall_name', 'latitude', 'longitude']].drop_duplicates('mall_name')
+    coords = coords.assign(mall_name=coords['mall_name'].str.strip())
+    merged = coords.merge(datamart[['MALL_NAME', 'LAT', 'LNG']], left_on='mall_name', right_on='MALL_NAME')
+
+    lat1, lon1, lat2, lon2 = (np.radians(merged[c]) for c in ['latitude', 'longitude', 'LAT', 'LNG'])
+    a = np.sin((lat2 - lat1) / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin((lon2 - lon1) / 2) ** 2
+    merged['km_apart'] = 2 * 6371 * np.arcsin(np.sqrt(a))
+
+    far = merged[merged['km_apart'] > COORD_MISMATCH_KM]
+    if len(far):
+        print(f"WARNING: {len(far)} malls' full_df coordinates are >{COORD_MISMATCH_KM}km from the datamart's:")
+        print(far[['mall_name', 'latitude', 'longitude', 'LAT', 'LNG', 'km_apart']].round(3).to_string(index=False))
+
+
 def build_amenity_summary():
     """Runs the full amenity merge/spatial-join pipeline and returns the
     per-mall summary DataFrame (indexed by mall_name)."""
@@ -100,6 +134,11 @@ def build_amenity_summary():
 
     malls_df['postal'] = malls_df['postal'].astype(str)
     malls_df = malls_df.rename(columns={'name': 'mall_name'})
+
+    for mall, (lat, lon) in COORD_OVERRIDES.items():
+        mask = malls_df['mall_name'] == mall
+        malls_df.loc[mask, ['latitude', 'longitude']] = [lat, lon]
+    check_coords_against_datamart(malls_df)
 
     check = malls_df[malls_df.duplicated(subset=['postal'], keep=False)]
     print("Malls sharing a postal code:")
@@ -294,10 +333,15 @@ def apply_datamart_and_satisfy(mall_locations_summary):
     return total_summary
 
 
-mall_locations_summary = build_amenity_summary()
-total_summary = apply_datamart_and_satisfy(mall_locations_summary)
+def main():
+    mall_locations_summary = build_amenity_summary()
+    total_summary = apply_datamart_and_satisfy(mall_locations_summary)
 
-total_summary.to_csv("mall_locations_summary.csv", index=False)
+    total_summary.to_csv(OUTPUT_PATH, index=False)
 
-with pd.option_context('display.max_columns', None, 'display.width', 1000):
-    print(total_summary)
+    with pd.option_context('display.max_columns', None, 'display.width', 1000):
+        print(total_summary)
+
+
+if __name__ == "__main__":
+    main()
