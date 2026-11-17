@@ -39,6 +39,8 @@ import numpy as np
 import pandas as pd
 from bs4 import BeautifulSoup
 
+from mall_common import dedupe_hdp_outlets, recompute_satisfy
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -55,6 +57,9 @@ COORD_OVERRIDES = {
     "Sun Plaza": (1.4482, 103.8195),
 }
 COORD_MISMATCH_KM = 1  # warn when full_df and datamart coords differ by more
+
+# SportFacilities.csv facility types that count as a gym (lowercased).
+GYM_FACILITY_TYPES = {"gymnasium", "fitness corner"}
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +139,9 @@ def build_amenity_summary():
 
     malls_df['postal'] = malls_df['postal'].astype(str)
     malls_df = malls_df.rename(columns={'name': 'mall_name'})
+    # A trailing space in a name (e.g. "People Park Complex ") silently breaks
+    # every name-based merge below (datamart, playgrounds).
+    malls_df['mall_name'] = malls_df['mall_name'].str.strip()
 
     for mall, (lat, lon) in COORD_OVERRIDES.items():
         mask = malls_df['mall_name'] == mall
@@ -187,6 +195,7 @@ def build_amenity_summary():
     # -----------------------------------------------------------------
     playground_df = pd.read_csv(f"{DATA_DIR}/mall_playgrounds.csv")
     playground_df = playground_df.rename(columns={'Mall / Location': 'mall_name', 'Playground': 'has_playground'})
+    playground_df['mall_name'] = playground_df['mall_name'].str.strip()
 
     unmatched_playgrounds = playground_df[~playground_df['mall_name'].isin(malls_df['mall_name'])]
     if len(unmatched_playgrounds):
@@ -208,7 +217,8 @@ def build_amenity_summary():
     hdp_df = pd.read_csv(f"{DATA_DIR}/clean_hdp_FINAL.csv", dtype={'postal': str})
     hdp_df['postal'] = hdp_df['postal'].astype(str).str.zfill(6)
     print(f"{len(hdp_df)} initial HDP outlets")
-    hdp_df = hdp_df.drop_duplicates()
+    # An outlet listed under several categories is still one outlet.
+    hdp_df = dedupe_hdp_outlets(hdp_df)
     print(f"{len(hdp_df)} unique HDP outlets")
 
     print(f"Total null rows: {hdp_df['postal'].isnull().sum()}")
@@ -218,14 +228,25 @@ def build_amenity_summary():
     mapped_stores = stores_malls_mapped[stores_malls_mapped['mall_name'].notnull()].copy()
     print(f"{len(mapped_stores)}/{len(hdp_df)} HDP stores mapped to malls\n")
 
-    # --- Sports facilities (CSV) ---
+    # --- Gyms from the sports facilities CSV ---
+    # The file has one row per facility TYPE per venue (pools, courts,
+    # studios, ...), so keep only gym-type rows and count each venue once.
     gym_csv_df = pd.read_csv(f"{DATA_DIR}/SportFacilities.csv", dtype={"PostalCode": str})
     gym_csv_df = gym_csv_df.rename(columns={"PostalCode": "postal"})
     print(f"{len(gym_csv_df)} initial sports facilities")
-    gym_csv_df = gym_csv_df.drop_duplicates()
+    gym_csv_df = gym_csv_df[gym_csv_df['SportsFacility'].str.strip().str.lower().isin(GYM_FACILITY_TYPES)]
+    print(f"{len(gym_csv_df)} gym-type rows (of {', '.join(sorted(GYM_FACILITY_TYPES))})")
     print(f"Total null rows: {gym_csv_df['postal'].isnull().sum()}")
     gym_csv_df = gym_csv_df[gym_csv_df['postal'].notnull()]
-    print(f"{len(gym_csv_df)} unique sports facilities")
+    gym_csv_df = gym_csv_df.assign(_venue=gym_csv_df['VenueName'].str.strip().str.lower())
+    gym_csv_df = gym_csv_df.drop_duplicates(subset=['postal', '_venue']).drop(columns='_venue')
+    # The GeoJSON gym list overlaps this one; where it already has a gym at a
+    # postal code, it wins and the CSV row is dropped so the gym isn't
+    # counted twice.
+    already_in_geojson = gym_csv_df['postal'].isin(gym_geo_gdf['postal'])
+    print(f"{int(already_in_geojson.sum())} CSV gyms dropped as already in the GeoJSON gym list")
+    gym_csv_df = gym_csv_df[~already_in_geojson]
+    print(f"{len(gym_csv_df)} unique CSV gyms")
 
     gyms_csv_malls_mapped = pd.merge(gym_csv_df, malls_for_merge, how='left', on='postal')
     mapped_gyms_csv = gyms_csv_malls_mapped[gyms_csv_malls_mapped['mall_name'].notnull()].copy()
@@ -306,29 +327,20 @@ def apply_datamart_and_satisfy(mall_locations_summary):
     """Merges in datamart_summary.csv and computes the final 'satisfy' flag."""
 
     mall_datamart_summary = pd.read_csv(f"{DATA_DIR}/datamart_summary.csv")
+    mall_datamart_summary['MALL_NAME'] = mall_datamart_summary['MALL_NAME'].str.strip()
     mall_datamart_summary = mall_datamart_summary.rename(columns={'MALL_NAME': 'mall_name'}).drop(
         columns=['HPM', 'LAT', 'LNG']
     )
 
+    unmatched = set(mall_locations_summary['mall_name']) - set(mall_datamart_summary['mall_name'])
+    if unmatched:
+        print(f"WARNING: {len(unmatched)} malls have no datamart row (their datamart fields will be NaN): {sorted(unmatched)}")
+
     total_summary = pd.merge(mall_locations_summary, mall_datamart_summary, how="left", on='mall_name')
 
-    # ==================== SATISFY CURRENT CRITERIA =========================
-    # Combine gym counts from both CSV and GeoJSON sources
-    total_gyms = total_summary['Gym/Sports (CSV)'] + total_summary['Gym (GeoJSON)']
-
-    # bike rack and playground same category
-    has_bike_or_playground = (total_summary['has_bike_rack'] >= 1) | (total_summary['has_playground'] >= 1)
-
-    # Set 'satisfy' to 1 if has_bike_or_playground, total gyms >= 1,
-    # HPB events count >= 1 and HDP >= 3, else 0
-    total_summary['satisfy'] = (
-        has_bike_or_playground &
-        (total_gyms >= 1) &
-        (total_summary['hpb_event_count'] >= 1) &
-        # (total_summary['supermarket_outlet_count'] >= 1) &
-        (total_summary['HDP Outlet'] >= 3)
-    ).astype(int)
-    # =========================================================================
+    # 'satisfy' uses the same criteria (and defaults) as the dashboard — see
+    # mall_common.recompute_satisfy().
+    total_summary['satisfy'] = recompute_satisfy(total_summary)
 
     return total_summary
 
