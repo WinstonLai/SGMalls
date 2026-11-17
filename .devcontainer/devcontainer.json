@@ -17,7 +17,10 @@
       ]
     }
   },
-  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; pip3 install --user streamlit; echo '✅ Packages installed and Requirements met'",
+  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; echo '✅ Packages installed and Requirements met'",
+  // CORS and XSRF protection are switched off only for this Codespaces preview:
+  // behind the Codespaces port proxy Streamlit rejects file uploads otherwise.
+  // Don't copy these flags into a real deployment.
   "postAttachCommand": {
     "server": "streamlit run mall_dashboard.py --server.enableCORS false --server.enableXsrfProtection false"
   },

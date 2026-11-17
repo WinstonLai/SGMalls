@@ -12,6 +12,7 @@ explores that summary.
 | `mall_transformation_pipeline.py` | builds `mall_locations_summary.csv` from the raw files in `_data/` |
 | `mall_dashboard.py` | Streamlit dashboard over the summary (see [Dashboard](#dashboard)) |
 | `mall_common.py` | logic shared by both: the `satisfy` criteria and HDP outlet de-duplication |
+| `requirements.txt` / `requirements-pipeline.txt` | dashboard dependencies / extra pipeline dependencies (includes the first) |
 | `_data/` | raw inputs (table below) |
 | `mall_locations_summary.csv` | pipeline output, also the dashboard's sample data |
 
@@ -28,8 +29,9 @@ openv5.py  ->  full_df.csv  ->  mall_transformation_pipeline.py  ->  mall_locati
    without `openv5.py` you can't regenerate it, so fix bad rows by hand (or
    add them to `COORD_OVERRIDES` in the pipeline, see Notes).
 
-2. **`mall_transformation_pipeline.py`** (run from anywhere:
-   `python mall_transformation_pipeline.py`)
+2. **`mall_transformation_pipeline.py`** (needs `pip install -r requirements-pipeline.txt`;
+   run from anywhere: `python mall_transformation_pipeline.py`, add `-v` to also
+   log the full DataFrame dumps)
    - `build_amenity_summary()` — joins `full_df.csv` against every amenity
      source (postal-code merges for clinics/gyms/HDP outlets, a 200m spatial
      buffer join for bike racks, a name match for playgrounds) and produces
@@ -57,8 +59,8 @@ All expected under `_data/` next to the script (`DATA_DIR` at the top of
 | `clinic_df.csv` | data.gov.sg | polyclinic/PHPC clinic locations |
 | `datamart_summary.csv` | internal datamart | HPB event counts, supermarket counts, etc. |
 
-`_data/List of shopping malls in SG - List of malls.csv` and `_data/place` are
-not read by any code here.
+`_data/List of shopping malls in SG - List of malls.csv` (`name`, `name2`, `HPM`)
+is not read by any code here; it looks like the mall list `openv5.py` geocodes.
 
 ## Output
 
@@ -91,8 +93,8 @@ the app stops. If both are set, the sample data wins and a warning says so.
   living, C HPB/H365 engagement, D healthcare, E population), each the average
   of its fields' `value / max across all malls`, combined with adjustable
   weights that always total 100. Filters don't change the scores.
-- **Map** — green = satisfies the criteria, red = does not, gold ring = current
-  HPM mall.
+- **Map** — blue = satisfies the criteria, orange = does not, dark ring = current
+  HPM mall. The tooltip spells out the status and the counts.
 
 ## Notes
 
@@ -112,8 +114,12 @@ the app stops. If both are set, the sample data wins and a warning says so.
   dropped so it isn't counted twice.
 - **Mall names** are stripped of surrounding whitespace on load; the pipeline
   warns about any mall with no datamart row.
-- **Coordinates** — the pipeline warns when a mall's `full_df.csv` coordinates
-  are more than 1 km from the datamart's `LAT`/`LNG`, and `COORD_OVERRIDES`
-  corrects confirmed bad geocodes (currently Sun Plaza). IMM, Nex, KAP,
-  Singpost Centre and Terminal 3 are flagged by that warning but still need
-  correct coordinates.
+- **Coordinates and postals** — `full_df.csv` is the geocoder's output with a few
+  hand corrections: wrong postal rows removed (e.g. Nexus @One-North and
+  Nexus International School had been attached to Nex, the Greenwich Drive
+  logistics hub to Singpost Centre) and mall coordinates fixed (Nex, IMM, KAP,
+  Singpost Centre, Sun Plaza), all checked against OneMap by postal code.
+  Re-apply them if `full_df.csv` is regenerated. The pipeline warns when a
+  mall's coordinates are more than 1 km from the datamart's `LAT`/`LNG`,
+  except for the malls in `COORDS_VERIFIED`, where the datamart is the wrong
+  one. Still unchecked: Sembawang Point 758440, The Central 239897/239899.
